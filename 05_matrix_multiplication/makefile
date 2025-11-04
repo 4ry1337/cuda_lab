@@ -10,9 +10,9 @@ CUDA_ARCH ?= sm_86
 
 # Compiler flags (can be overridden, e.g., make CFLAGS="-O0 -g")
 CFLAGS ?= -O3 -Wall
-CXXFLAGS ?= -O3 -Wall
-NVCC_FLAGS := -arch=$(CUDA_ARCH)
-CUDA_OPT_FLAGS ?= -O3
+CXXFLAGS ?= -O3 -Wall -DVERIFY_RESULTS
+NVCC_FLAGS := -arch=$(CUDA_ARCH) 
+CUDA_OPT_FLAGS ?= -O3 -DVERIFY_RESULTS
 
 # Find all the C, C++, and CUDA files we want to compile
 # Note the single quotes around the * expressions. The shell will incorrectly expand these otherwise, but we want to send the * directly to the find command.

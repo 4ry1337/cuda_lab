@@ -1,8 +1,8 @@
-#ifndef REDUCTION_H_
-#define REDUCTION_H_
+#ifndef MULTIPLICATION_CUH_
+#define MULTIPLICATION_CUH_
 
 #include <cuda_runtime.h>
 
 extern void wrapper();
 
-#endif // !REDUCTION_H_
+#endif // !MULTIPLICATION_CUH_
