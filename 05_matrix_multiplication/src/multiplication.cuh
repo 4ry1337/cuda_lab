@@ -5,6 +5,8 @@
 
 #define CEIL_DIV(M, N) (((M) + (N) - 1) / (N))
 
-extern void wrapper();
+enum KernelType { NAIVE, GMEM, SMEM, DBLOCK, DDBLOCK };
+
+extern void wrapper(KernelType type, bool verify_result);
 
 #endif // !MULTIPLICATION_CUH_

@@ -32,6 +32,12 @@
 #include <cassert>
 
 #include "cuda_timer.cuh"
+#include "kernels/00_cpu.h"
+#include "kernels/01_naive.cuh"
+#include "kernels/02_gmem.cuh"
+#include "kernels/03_smem.cuh"
+#include "kernels/04_dblock.cuh"
+#include "kernels/05_ddblock.cuh"
 #include "multiplication.cuh"
 #include "random_matrix.cuh"
 #include "utils.cuh"
@@ -58,336 +64,6 @@ void device_properties(cudaDeviceProp &device) {
 // [1] https://khushi-411.github.io/multidim_grids_and_data/#link2
 // [2] https://siboehm.com/articles/22/CUDA-MMM
 
-#ifdef NAIVE
-// Naive matrix multiplication: C = A × B
-// A is M×N, B is N×K, C is M×K
-__global__ void matrix_multplication(int *d_a, int *d_b, int *d_out, size_t M,
-                                     size_t N, size_t K) {
-  // Calculate global thread indices
-  // x = column index in output matrix C (ranges 0 to K-1)
-  // y = row index in output matrix C (ranges 0 to M-1)
-  size_t x = threadIdx.x + blockIdx.x * blockDim.x; // column (x-axis)
-  size_t y = threadIdx.y + blockIdx.y * blockDim.y; // row (y-axis)
-
-  // Check bounds: ensure we're within the output matrix C (M×K)
-  if ((y < M) && (x < K)) {
-    int val = 0;
-
-    // Compute dot product: C[y][x] = sum(A[y][i] * B[i][x]) for i=0 to N-1
-    // - A[y][i]: element at row y, column i in matrix A (M×N)
-    //   Linearized index: y * N + i (row-major storage)
-    // - B[i][x]: element at row i, column x in matrix B (N×K)
-    //   Linearized index: i * K + x (row-major storage)
-    for (size_t i = 0; i < N; i++) {
-      val += d_a[y * N + i] * d_b[i * K + x];
-    }
-
-    // Store result in C[y][x]
-    // Linearized index: y * K + x (output matrix C is M×K)
-    d_out[y * K + x] = val;
-  }
-}
-#endif
-
-#ifdef GMEM
-// Global memory coalescing implementation: C = A × B
-// A is M×N, B is N×K, C is M×K
-// BLOCKSIZE: compile-time constant (typically 32) for better memory access
-// patterns
-//
-// IMPORTANT: This kernel requires 1D thread blocks of size BLOCKSIZE*BLOCKSIZE!
-// Launch with: <<<grid, BLOCKSIZE*BLOCKSIZE, ...>>> e.g., <<<grid, 1024, ...>>>
-//
-// How 1D indexing improves memory coalescing:
-// - Threads are numbered linearly: threadIdx.x = 0 to 1023 (for BLOCKSIZE=32)
-// - Adjacent thread IDs map to adjacent columns (same row):
-//     Thread 0  → [row 0, col 0]    writes to d_out[0*K + 0]
-//     Thread 1  → [row 0, col 1]    writes to d_out[0*K + 1]  (adjacent!)
-//     Thread 2  → [row 0, col 2]    writes to d_out[0*K + 2]  (adjacent!)
-//     ...
-//     Thread 31 → [row 0, col 31]   writes to d_out[0*K + 31]
-//     Thread 32 → [row 1, col 0]    writes to d_out[1*K + 0]
-//     ...
-// - This ensures adjacent threads write to adjacent memory addresses
-// - GPU can coalesce these into fewer memory transactions (better performance!)
-//
-template <const size_t BLOCKSIZE>
-__global__ void matrix_multplication(int *d_a, int *d_b, int *d_out, size_t M,
-                                     size_t N, size_t K) {
-  // Calculate global thread indices using linear thread ID (threadIdx.x)
-  // This improves memory coalescing by having adjacent threads access adjacent
-  // memory addresses in row-major layout
-  // x = column index in output matrix C (ranges 0 to K-1)
-  // y = row index in output matrix C (ranges 0 to M-1)
-  const int x = blockIdx.x * BLOCKSIZE + (threadIdx.x % BLOCKSIZE); // column
-  const int y = blockIdx.y * BLOCKSIZE + (threadIdx.x / BLOCKSIZE); // row
-
-  // Check bounds: ensure we're within the output matrix C (M×K)
-  if ((y < M) && (x < K)) {
-    int val = 0;
-
-    // Compute dot product: C[y][x] = sum(A[y][i] * B[i][x]) for i=0 to N-1
-    for (size_t i = 0; i < N; i++) {
-      val += d_a[y * N + i] * d_b[i * K + x];
-    }
-
-    // Store result in C[y][x]
-    d_out[y * K + x] = val;
-  }
-}
-#endif
-
-#ifdef SMEM
-template <const int BLOCKSIZE>
-__global__ void matrix_multplication(int *d_a, int *d_b, int *d_out, size_t M,
-                                     size_t N, size_t K) {
-  // the output block that we want to compute in this threadblock
-  const uint out_row = blockIdx.x;
-  const uint out_col = blockIdx.y;
-
-  // allocate buffer for current block in fast shared mem
-  // shared mem is shared between all threads in a block
-  __shared__ float s_a[BLOCKSIZE * BLOCKSIZE];
-  __shared__ float s_b[BLOCKSIZE * BLOCKSIZE];
-
-  const uint thread_col = threadIdx.x % BLOCKSIZE;
-  const uint thread_row = threadIdx.x / BLOCKSIZE;
-
-  // advance pointers to the starting positions
-  d_a += out_row * BLOCKSIZE * N;                         // row=cRow, col=0
-  d_b += out_col * BLOCKSIZE;                             // row=0, col=cCol
-  d_out += out_row * BLOCKSIZE * K + out_col * BLOCKSIZE; // row=cRow, col=cCol
-
-  int val;
-
-  for (int block_id = 0; block_id < N; block_id += BLOCKSIZE) {
-    // Have each thread load one of the elements in A & B
-    // Make the threadCol (=threadIdx.x) the consecutive index
-    // to allow global memory access coalescing
-    s_a[thread_row * BLOCKSIZE + thread_col] = d_a[thread_row * N + thread_col];
-    s_b[thread_row * BLOCKSIZE + thread_col] = d_b[thread_row * K + thread_col];
-
-    // block threads in this block until cache is fully populated
-    __syncthreads();
-    d_a += BLOCKSIZE;
-    d_b += BLOCKSIZE * K;
-
-    // execute the dotproduct on the currently cached block
-    for (int i = 0; i < BLOCKSIZE; ++i) {
-      val += s_a[thread_row * BLOCKSIZE + i] * s_b[i * BLOCKSIZE + thread_col];
-    }
-    // need to sync again at the end, to avoid faster threads
-    // fetching the next block into the cache before slower threads are done
-    __syncthreads();
-  }
-  d_out[thread_row * N + thread_col] = val;
-}
-#endif
-
-#ifdef DBLOCK
-// 1D Blocktiling implementation: C = A × B
-// A is M×N, B is N×K, C is M×K
-//
-// Template parameters:
-// - BM: Block tile size in M dimension (rows of output)
-// - BN: Block tile size in N dimension (shared dimension, controls SMEM usage)
-// - BK: Block tile size in K dimension (cols of output)
-// - TM: Number of output elements each thread computes (1D blocktiling factor)
-//
-// Each thread block processes a BM×BK tile of output matrix
-// Each thread computes TM consecutive output elements in the row direction
-// Uses shared memory to cache tiles of A and B for reuse
-//
-template <const int BM, const int BN, const int BK, const int TM>
-__global__ void matrix_multplication(int *d_a, int *d_b, int *d_out, size_t M,
-                                     size_t N, size_t K) {
-  // Block-level tile indices in output matrix
-  // blockIdx.x = row block index (0 to M/BM - 1)
-  // blockIdx.y = col block index (0 to K/BK - 1)
-  // This configuration ensures better L2 cache hit rate (see comment below)
-  const uint out_row = blockIdx.x;
-  const uint out_col = blockIdx.y;
-
-  // allocate space for the current blocktile in SMEM
-  __shared__ int s_a[BM * BN];
-  __shared__ int s_b[BN * BK];
-
-  // each warp will calculate 32*TM elements, with 32 being the columnar dim.
-  const uint thread_col = threadIdx.x % BK;
-  const uint thread_row = threadIdx.x / BK;
-
-  // Move blocktile to beginning of A's row and B's column
-  d_a += out_row * BM * N;                  // row=cRow, col=0
-  d_b += out_col * BK;                      // row=0, col=cCol
-  d_out += out_row * BM * K + out_col * BK; // row=cRow, col=cCol
-
-  // todo: adjust this to each thread to load multiple entries and
-  // better exploit the cache sizes
-  assert(BM * BN == blockDim.x);
-  assert(BN * BK == blockDim.x);
-
-  const uint inner_a_col = threadIdx.x % BN; // warp-level GMEM coalescing
-  const uint inner_a_row = threadIdx.x / BN;
-  const uint inner_b_col = threadIdx.x % BK; // warp-level GMEM coalescing
-  const uint inner_b_row = threadIdx.x / BK;
-
-  // allocate thread-local cache for results in registerfile
-  int thread_results[TM] = {0};
-
-  for (int block_id = 0; block_id < N; block_id += BN) {
-    // populate the SMEM caches
-    s_a[inner_a_row * BN + inner_a_col] = d_a[inner_a_row * N + inner_a_col];
-    s_b[inner_b_row * BK + inner_b_col] = d_b[inner_b_row * K + inner_b_col];
-
-    // wait for all threads to finish loading
-    __syncthreads();
-
-    // calculate per-thread results
-    for (uint i = 0; i < BN; ++i) {
-      // we make the dotproduct loop the outside loop, which facilitates
-      // reuse of the s_b entry, which we can cache in a tmp var.
-      int temp_b = s_b[i * BK + thread_col];
-      for (uint result_index = 0; result_index < TM; ++result_index) {
-        thread_results[result_index] +=
-            s_a[(thread_row * TM + result_index) * BN + i] * temp_b;
-      }
-    }
-    __syncthreads();
-
-    // advance blocktile
-    d_a += BN;
-    d_b += BN * K;
-  }
-  // write out the results
-  for (uint result_index = 0; result_index < TM; ++result_index) {
-    d_out[(thread_row * TM + result_index) * K + thread_col] =
-        thread_results[result_index];
-  }
-}
-#endif
-
-#ifdef DDBLOCK
-// 2D Blocktiling implementation: C = A × B
-// A is M×N, B is N×K, C is M×K
-//
-// Template parameters:
-// - BM: Block tile size in M dimension (rows of output)
-// - BN: Block tile size in N dimension (shared dimension, controls SMEM usage)
-// - BK: Block tile size in K dimension (cols of output)
-// - TM: Number of output rows each thread computes (vertical blocktiling)
-// - TN: Number of output cols each thread computes (horizontal blocktiling)
-//
-// Each thread block processes a BM×BK tile of output matrix
-// Each thread computes TM×TN output elements (a 2D tile)
-// Uses shared memory + register caching for maximum data reuse
-//
-template <const int BM, const int BN, const int BK, const int TM, const int TN>
-__global__ void matrix_multplication(int *d_a, int *d_b, int *d_out, size_t M,
-                                     size_t N, size_t K) {
-  // Block-level tile indices in output matrix
-  const uint out_row = blockIdx.x;
-  const uint out_col = blockIdx.y;
-
-  const uint total_results_blocktile = BM * BK;
-  // A thread is responsible for calculating TM*TN elements in the blocktile
-  const uint num_threads_per_blocktile = total_results_blocktile / (TM * TN);
-
-  const uint thread_col = threadIdx.x % (BK / TN);
-  const uint thread_row = threadIdx.x / (BK / TN);
-
-  __shared__ int s_a[BM * BN];
-  __shared__ int s_b[BN * BK];
-
-  d_a += out_row * BM * N;                  // row=cRow, col=0
-  d_b += out_col * BK;                      // row=0, col=cCol
-  d_out += out_row * BM * K + out_col * BK; // row=cRow, col=cCol
-                                            //
-  // calculating the indices that this thread will load into SMEM
-  const uint inner_a_row = threadIdx.x / BN;
-  const uint inner_a_col = threadIdx.x % BN;
-  // calculates the number of rows of s_a that are being loaded in a single step
-  // by a single block
-  const uint stride_a = num_threads_per_blocktile / BN;
-  const uint inner_b_row = threadIdx.x / BK;
-  const uint inner_b_col = threadIdx.x % BK;
-  // for both s_a and s_b we want each load to span the full column-width, for
-  // better GMEM coalescing (as opposed to spanning full row-width and iterating
-  // across columns)
-  const uint stride_b = num_threads_per_blocktile / BK;
-
-  int thread_results[TM * TN] = {0};
-
-  // register caches for As and Bs
-  int reg_m[TM] = {0};
-  int reg_n[TN] = {0};
-
-  for (uint block_id = 0; block_id < N; block_id += BN) {
-    // populate the SMEM caches
-    for (uint loadOffset = 0; loadOffset < BM; loadOffset += stride_a) {
-      s_a[(inner_a_row + loadOffset) * BN + inner_a_col] =
-          d_a[(inner_a_row + loadOffset) * N + inner_a_col];
-    }
-    for (uint loadOffset = 0; loadOffset < BN; loadOffset += stride_b) {
-      s_b[(inner_b_row + loadOffset) * BK + inner_b_col] =
-          d_b[(inner_b_row + loadOffset) * K + inner_b_col];
-    }
-    __syncthreads();
-
-    // advance blocktile
-    d_a += BN;     // move BN columns to right
-    d_b += BN * K; // move BN rows down
-
-    // calculate per-thread results
-    for (uint index = 0; index < BN; ++index) {
-      // block into registers
-      for (uint i = 0; i < TM; ++i) {
-        reg_m[i] = s_a[(thread_row * TM + i) * BN + index];
-      }
-      for (uint i = 0; i < TN; ++i) {
-        reg_n[i] = s_b[index * BK + thread_col * TN + i];
-      }
-      for (uint result_index_m = 0; result_index_m < TM; ++result_index_m) {
-        for (uint result_index_n = 0; result_index_n < TN; ++result_index_n) {
-          thread_results[result_index_m * TN + result_index_n] +=
-              reg_m[result_index_m] * reg_n[result_index_n];
-        }
-      }
-    }
-    __syncthreads();
-  }
-  // write out the results
-  for (uint result_index_m = 0; result_index_m < TM; ++result_index_m) {
-    for (uint result_index_n = 0; result_index_n < TN; ++result_index_n) {
-      d_out[(thread_row * TM + result_index_m) * K + thread_col * TN +
-            result_index_n] =
-          thread_results[result_index_m * TN + result_index_n];
-    }
-  }
-}
-#endif
-
-// CPU reference implementation: C = A × B
-// A is M×N, B is N×K, C is M×K
-// Used for verification of GPU results
-void matrix_multiplication_cpu(int *h_a, int *h_b, int *h_out, size_t M,
-                               size_t N, size_t K) {
-  // Iterate over all rows of output matrix C
-  for (size_t x = 0; x < M; x++) {
-    // Iterate over all columns of output matrix C
-    for (size_t y = 0; y < K; y++) {
-      int val = 0;
-
-      // Compute dot product: C[x][y] = sum(A[x][z] * B[z][y]) for z=0 to N-1
-      for (size_t z = 0; z < N; z++) {
-        val += h_a[x * N + z] * h_b[z * K + y];
-      }
-
-      // Store result in C[x][y]
-      h_out[x * K + y] = val;
-    }
-  }
-}
-
 bool compare_results(int *gpu_result, int *cpu_result, size_t total_size,
                      int max_errors_to_show = 10) {
   bool results_match = true;
@@ -396,8 +72,8 @@ bool compare_results(int *gpu_result, int *cpu_result, size_t total_size,
   for (size_t i = 0; i < total_size; i++) {
     if (gpu_result[i] != cpu_result[i]) {
       if (errors_shown < max_errors_to_show) {
-        printf("VERIFICATION: Mismatch at index %zu: GPU=%d, CPU=%d\n", i,
-               gpu_result[i], cpu_result[i]);
+        printf("Mismatch at index %zu: GPU=%d, CPU=%d\n", i, gpu_result[i],
+               cpu_result[i]);
         errors_shown++;
       }
       results_match = false;
@@ -405,16 +81,15 @@ bool compare_results(int *gpu_result, int *cpu_result, size_t total_size,
   }
 
   if (results_match) {
-    printf("\nVERIFICATION: Results match!\n");
+    printf("\nResults match!\n");
   } else {
-    printf("\nVERIFICATION: Results DO NOT match! (%d+ errors found)\n",
-           errors_shown);
+    printf("\nResults DO NOT match! (%d+ errors found)\n", errors_shown);
   }
 
   return results_match;
 }
 
-void wrapper() {
+void wrapper(KernelType kernel, bool verify_results) {
   int device_id;
   cudaGetDevice(&device_id);
   cudaDeviceProp device;
@@ -464,7 +139,6 @@ void wrapper() {
   cuda_error("cudaStreamCreate streams[1]");
 
   // CUDA thread block configuration
-  // Each block has 32×32 threads = 1024 threads total
   // - blockDim.x = 32 (threads per block in x-direction, handles columns)
   // - blockDim.y = 32 (threads per block in y-direction, handles rows)
   dim3 threads_per_block(32, 32, 1);
@@ -504,60 +178,74 @@ void wrapper() {
   {
     CudaTimer timer("Matrix multiplication on GPU");
 
-    // Compute C = A × B where C is M×K (1024 rows × 512 cols)
-    // Grid dimensions: {CEIL_DIV(cols, 32), CEIL_DIV(rows, 32)}
-    //                = {CEIL_DIV(512, 32), CEIL_DIV(1024, 32)}
-    //                = {16 blocks, 32 blocks}
-    //
-    // Each thread computes ONE element C[row][col]:
-    //   - threadIdx.x + blockIdx.x * blockDim.x = column index (0 to K-1)
-    //   - threadIdx.y + blockIdx.y * blockDim.y = row index (0 to M-1)
-    //
-    // Why {K, M} not {M, K}? Because CUDA convention:
-    //   - gridDim.x (1st param) controls blockIdx.x → x-axis → columns
-    //   - gridDim.y (2nd param) controls blockIdx.y → y-axis → rows
-#ifdef NAIVE
-    matrix_multplication<<<dim3{CEIL_DIV(K, 32), CEIL_DIV(M, 32)},
-                           threads_per_block, 0, streams[0]>>>(d_a, d_b, d_out,
-                                                               M, N, K);
-#endif
-#ifdef GMEM
-    // GMEM kernel uses 1D thread blocks (32*32 = 1024 threads)
-    // Instead of 2D blocks like NAIVE (32×32 threads)
-    // This allows linear indexing: threadIdx.x maps to [row, col] via:
-    //   col = threadIdx.x % 32  (adjacent threads → adjacent columns)
-    //   row = threadIdx.x / 32  (for memory coalescing in row-major layout)
-    matrix_multplication<32>
-        <<<dim3{CEIL_DIV(K, 32), CEIL_DIV(M, 32)}, 32 * 32, 0, streams[0]>>>(
-            d_a, d_b, d_out, M, N, K);
-#endif
-#ifdef SMEM
-    matrix_multplication<32>
-        <<<dim3{CEIL_DIV(K, 32), CEIL_DIV(M, 32)}, 32 * 32, 0, streams[0]>>>(
-            d_a, d_b, d_out, M, N, K);
-#endif
-#ifdef DBLOCK
-    const uint BM = 64;
-    const uint BN = 8;
-    const uint BK = 64;
-    const uint TM = 8;
-    // Template params: <BM, BN, BK, TM> (match kernel definition order!)
-    // Grid: {rows, cols} because kernel uses blockIdx.x for out_row, blockIdx.y
-    // for out_col
-    matrix_multplication<BM, BN, BK, TM>
-        <<<dim3{CEIL_DIV(M, BM), CEIL_DIV(K, BK)}, (BM * BK) / TM, 0,
-           streams[0]>>>(d_a, d_b, d_out, M, N, K);
-#endif
-#ifdef DDBLOCK
-    const uint BM = 64;
-    const uint BN = 8;
-    const uint BK = 64;
-    const uint TM = 8;
-    const uint TN = 8;
-    matrix_multplication<BM, BN, BK, TM, TN>
-        <<<dim3{CEIL_DIV(M, BM), CEIL_DIV(K, BK)}, (BM * BK) / (TM * TN), 0,
-           streams[0]>>>(d_a, d_b, d_out, M, N, K);
-#endif
+    switch (kernel) {
+    case NAIVE: {
+      // Compute C = A × B where C is M×K (1024 rows × 512 cols)
+      // Grid dimensions: {CEIL_DIV(cols, 32), CEIL_DIV(rows, 32)}
+      //                = {CEIL_DIV(512, 32), CEIL_DIV(1024, 32)}
+      //                = {16 blocks, 32 blocks}
+      //
+      // Each thread computes ONE element C[row][col]:
+      //   - threadIdx.x + blockIdx.x * blockDim.x = column index (0 to K-1)
+      //   - threadIdx.y + blockIdx.y * blockDim.y = row index (0 to M-1)
+      //
+      // Why {K, M} not {M, K}? Because CUDA convention:
+      //   - gridDim.x (1st param) controls blockIdx.x → x-axis → columns
+      //   - gridDim.y (2nd param) controls blockIdx.y → y-axis → rows
+      matrix_multplication_naive<<<dim3{CEIL_DIV(K, 32), CEIL_DIV(M, 32)},
+                                   threads_per_block, 0, streams[0]>>>(
+          d_a, d_b, d_out, M, N, K);
+      break;
+    }
+    case GMEM: {
+      // GMEM kernel uses 1D thread blocks (32*32 = 1024 threads)
+      // Instead of 2D blocks like NAIVE (32×32 threads)
+      // This allows linear indexing: threadIdx.x maps to [row, col] via:
+      //   col = threadIdx.x % 32  (adjacent threads → adjacent columns)
+      //   row = threadIdx.x / 32  (for memory coalescing in row-major layout)
+      matrix_multplication_gmem<32>
+          <<<dim3{CEIL_DIV(K, 32), CEIL_DIV(M, 32)}, 32 * 32, 0, streams[0]>>>(
+              d_a, d_b, d_out, M, N, K);
+      break;
+    }
+    case SMEM: {
+      matrix_multplication_smem<32>
+          <<<dim3{CEIL_DIV(K, 32), CEIL_DIV(M, 32)}, 32 * 32, 0, streams[0]>>>(
+              d_a, d_b, d_out, M, N, K);
+      break;
+    }
+    case DBLOCK: {
+      const uint DBLOCK_BM = 64;
+      const uint DBLOCK_BN = 8;
+      const uint DBLOCK_BK = 64;
+      const uint DBLOCK_TM = 8;
+      // Template params: <BM, BN, BK, TM> (match kernel definition order!)
+      // Grid: {rows, cols} because kernel uses blockIdx.x for out_row,
+      // blockIdx.y for out_col
+      matrix_multplication_1d_blocktailing<DBLOCK_BM, DBLOCK_BN, DBLOCK_BK,
+                                           DBLOCK_TM>
+          <<<dim3{CEIL_DIV(M, DBLOCK_BM), CEIL_DIV(K, DBLOCK_BK)},
+             (DBLOCK_BM * DBLOCK_BK) / DBLOCK_TM, 0, streams[0]>>>(
+              d_a, d_b, d_out, M, N, K);
+      break;
+    }
+    case DDBLOCK: {
+      const uint DDBLOCK_BM = 64;
+      const uint DDBLOCK_BN = 8;
+      const uint DDBLOCK_BK = 64;
+      const uint DDBLOCK_TM = 8;
+      const uint DDBLOCK_TN = 8;
+
+      matrix_multplication_2d_blocktailing<DDBLOCK_BM, DDBLOCK_BN, DDBLOCK_BK,
+                                           DDBLOCK_TM, DDBLOCK_TN>
+          <<<dim3{CEIL_DIV(M, DDBLOCK_BM), CEIL_DIV(K, DDBLOCK_BK)},
+             (DDBLOCK_BM * DDBLOCK_BK) / (DDBLOCK_TM * DDBLOCK_TN), 0,
+             streams[0]>>>(d_a, d_b, d_out, M, N, K);
+      break;
+    }
+    default:
+      throw std::invalid_argument("Unknown kernel number");
+    }
     cuda_error("matrix_multplication");
     cudaStreamSynchronize(streams[0]);
   }
@@ -570,44 +258,44 @@ void wrapper() {
     cudaStreamSynchronize(streams[0]);
   }
 
-#ifdef VERIFY_RESULTS
-  int *h_a;
-  cudaMallocHost(&h_a, M * N * sizeof(int));
-  cuda_error("cudaMallocHost h_a");
+  if (verify_results) {
+    int *h_a;
+    cudaMallocHost(&h_a, M * N * sizeof(int));
+    cuda_error("cudaMallocHost h_a");
 
-  int *h_b;
-  cudaMallocHost(&h_b, N * K * sizeof(int));
-  cuda_error("cudaMallocHost h_b");
+    int *h_b;
+    cudaMallocHost(&h_b, N * K * sizeof(int));
+    cuda_error("cudaMallocHost h_b");
 
-  {
-    CudaTimer timer("VERIFICATION: Copying matrices from device to host");
-    cudaMemcpyAsync(h_a, d_a, M * N * sizeof(int), cudaMemcpyDeviceToHost,
-                    streams[0]);
-    cuda_error("cudaMemcpyAsync d_a to h_a");
-    cudaMemcpyAsync(h_b, d_b, N * K * sizeof(int), cudaMemcpyDeviceToHost,
-                    streams[1]);
-    cuda_error("cudaMemcpyAsync d_b to h_b");
-    cudaStreamSynchronize(streams[0]);
-    cudaStreamSynchronize(streams[1]);
+    {
+      CudaTimer timer("Verifing - copying matrices from device to host");
+      cudaMemcpyAsync(h_a, d_a, M * N * sizeof(int), cudaMemcpyDeviceToHost,
+                      streams[0]);
+      cuda_error("cudaMemcpyAsync d_a to h_a");
+      cudaMemcpyAsync(h_b, d_b, N * K * sizeof(int), cudaMemcpyDeviceToHost,
+                      streams[1]);
+      cuda_error("cudaMemcpyAsync d_b to h_b");
+      cudaStreamSynchronize(streams[0]);
+      cudaStreamSynchronize(streams[1]);
+    }
+
+    int *result;
+    cudaMallocHost(&result, M * K * sizeof(int));
+    cuda_error("cudaMallocHost result");
+
+    {
+      CudaTimer timer("Verifing - Matrix multiplication on CPU");
+      matrix_multiplication_cpu(h_a, h_b, result, M, N, K);
+    }
+
+    // Compare results
+    compare_results(h_out, result, M * K);
+
+    // Cleanup
+    cudaFreeHost(h_a);
+    cudaFreeHost(h_b);
+    cudaFreeHost(result);
   }
-
-  int *result;
-  cudaMallocHost(&result, M * K * sizeof(int));
-  cuda_error("VERIFICATION: cudaMallocHost result");
-
-  {
-    CudaTimer timer("VERIFICATION: Matrix multiplication on CPU");
-    matrix_multiplication_cpu(h_a, h_b, result, M, N, K);
-  }
-
-  // Compare results
-  compare_results(h_out, result, M * K);
-
-  // Cleanup
-  cudaFreeHost(h_a);
-  cudaFreeHost(h_b);
-  cudaFreeHost(result);
-#endif
 
   // Cleanup
   cudaFreeHost(h_out);
