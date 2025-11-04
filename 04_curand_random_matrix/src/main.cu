@@ -2,10 +2,6 @@
 #include "random_matrix.cuh"
 #include "utils.cuh"
 #include <cuda_runtime.h>
-#include <curand_kernel.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
 
 int main() {
   const int rows = 8;
