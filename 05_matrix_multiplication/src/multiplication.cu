@@ -24,38 +24,40 @@ void device_properties(cudaDeviceProp &device, int device_index = 0) {
 }
 
 __device__ void matrix_multplication_naive(int *d_a, int *d_b, int *d_out,
-                                           size_t width) {
-  size_t col = threadIdx.x + blockIdx.x * blockDim.x;
-  size_t row = threadIdx.y + blockIdx.y * blockDim.y;
+                                           size_t M, size_t N, size_t K) {
+  size_t x = threadIdx.x + blockIdx.x * blockDim.x;
+  size_t y = threadIdx.y + blockIdx.y * blockDim.y;
 
-  if ((row < width) && (col < width)) {
+  if ((y < M) && (x < K)) {
     int val = 0;
-    for (size_t k = 0; k < width; k++) {
-      val += d_a[row * width + k] * d_b[k * width + col];
+    for (size_t i = 0; i < N; i++) {
+      val += d_a[y * N + i] * d_b[i * K + x];
     }
-    d_out[row * width + col] = val;
+    d_out[y * K + x] = val;
   }
 }
 
-__global__ void matrix_multplication(int *d_a, int *d_b, int *d_out,
-                                     size_t width, size_t height) {
-  matrix_multplication_naive(d_a, d_b, d_out, width);
+// sources:
+// [1] https://khushi-411.github.io/multidim_grids_and_data/#link2
+// [2] https://siboehm.com/articles/22/CUDA-MMM
+__global__ void matrix_multplication(int *d_a, int *d_b, int *d_out, size_t M,
+                                     size_t N, size_t K) {
+  matrix_multplication_naive(d_a, d_b, d_out, M, N, K);
 }
 
-// CPU matrix multiplication for verification
-void matrix_multiplication_cpu(int *h_a, int *h_b, int *h_out, size_t width) {
-  for (size_t row = 0; row < width; row++) {
-    for (size_t col = 0; col < width; col++) {
+void matrix_multiplication_cpu(int *h_a, int *h_b, int *h_out, size_t M,
+                               size_t N, size_t K) {
+  for (size_t x = 0; x < M; x++) {
+    for (size_t y = 0; y < K; y++) {
       int val = 0;
-      for (size_t k = 0; k < width; k++) {
-        val += h_a[row * width + k] * h_b[k * width + col];
+      for (size_t z = 0; z < N; z++) {
+        val += h_a[x * N + z] * h_b[z * K + y];
       }
-      h_out[row * width + col] = val;
+      h_out[x * K + y] = val;
     }
   }
 }
 
-// Compare GPU and CPU results
 bool compare_results(int *gpu_result, int *cpu_result, size_t total_size,
                      int max_errors_to_show = 10) {
   bool results_match = true;
@@ -75,7 +77,7 @@ bool compare_results(int *gpu_result, int *cpu_result, size_t total_size,
   if (results_match) {
     printf("\nVERIFICATION: Results match!\n");
   } else {
-    printf("\nnVERIFICATION: Results DO NOT match! (%d+ errors found)\n",
+    printf("\nVERIFICATION: Results DO NOT match! (%d+ errors found)\n",
            errors_shown);
   }
 
@@ -83,57 +85,53 @@ bool compare_results(int *gpu_result, int *cpu_result, size_t total_size,
 }
 
 void wrapper() {
+  int device_id;
+  cudaGetDevice(&device_id);
   cudaDeviceProp device;
-  device_properties(device, 0);
+  device_properties(device, device_id);
 
   // sizes
-  size_t rows = device.maxThreadsDim[0];
-  size_t cols = device.maxThreadsDim[1];
-  printf("Matrix of size %zux%zu\n\n", rows, cols);
-  size_t total_size = rows * cols;
-  const size_t bytes = total_size * sizeof(int);
+  // M x N * N x K = M * K
+  size_t M = 1024, N = 512 + 256, K = 512;
 
   // pinned host matrices (for async copy)
   int *h_out;
-  cudaMallocHost(&h_out, bytes);
+  cudaMallocHost(&h_out, M * K * sizeof(int));
   cuda_error("cudaMallocHost h_out");
 
   // device matrices
   int *d_a;
-  cudaMalloc(&d_a, bytes);
+  cudaMalloc(&d_a, M * N * sizeof(int));
   cuda_error("cudaMalloc d_a");
 
   int *d_b;
-  cudaMalloc(&d_b, bytes);
+  cudaMalloc(&d_b, N * K * sizeof(int));
   cuda_error("cudaMalloc d_b");
 
   int *d_out;
-  cudaMalloc(&d_out, bytes);
+  cudaMalloc(&d_out, M * K * sizeof(int));
   cuda_error("cudaMalloc d_out");
 
-  // cuRAND states (optimized - use fewer states to save memory)
+  // random matrix
   unsigned long seed = 42; // time(NULL);
-  // Use 1024 states instead of 1M (64MB -> 64KB memory savings)
   const int num_states = 1024;
   curandState *d_states;
   cudaMalloc(&d_states, num_states * sizeof(curandState));
   cuda_error("cudaMalloc d_states");
 
-  // Create two streams
+  // streams
   cudaStream_t streams[2];
   cudaStreamCreate(&streams[0]);
   cuda_error("cudaStreamCreate streams[0]");
   cudaStreamCreate(&streams[1]);
   cuda_error("cudaStreamCreate streams[1]");
 
-  // kernel parameters for matrix multiplication
-  dim3 threads_per_block(32, 32); // 32x32 = 1024 threads per block
-  dim3 blocks_per_grid((cols + threads_per_block.x - 1) / threads_per_block.x,
-                       (rows + threads_per_block.y - 1) / threads_per_block.y);
+  dim3 threads_per_block(32, 32, 1); // 32x32 = 1024 threads per block
+  dim3 blocks_per_grid((M + threads_per_block.x - 1) / threads_per_block.x,
+                       (N + threads_per_block.y - 1) / threads_per_block.y);
 
   {
     CudaTimer timer("Initializing cuRAND states");
-    // Use 1D grid for state initialization
     int threads_init = 256;
     int blocks_init = (num_states + threads_init - 1) / threads_init;
     init_curand_states<<<blocks_init, threads_init, 0, streams[0]>>>(
@@ -144,14 +142,13 @@ void wrapper() {
   {
     CudaTimer timer("Generating random matrices on GPU");
     generate_random_matrix_int<<<blocks_per_grid, threads_per_block, 0,
-                                 streams[0]>>>(d_states, d_a, rows, cols, 100,
+                                 streams[0]>>>(d_states, d_a, M, N, 100,
                                                num_states);
     cuda_error("generate_random_matrix_int A");
     generate_random_matrix_int<<<blocks_per_grid, threads_per_block, 0,
-                                 streams[1]>>>(d_states, d_b, rows, cols, 100,
+                                 streams[1]>>>(d_states, d_b, N, K, 100,
                                                num_states);
     cuda_error("generate_random_matrix_int B");
-    // Wait for both streams to complete
     cudaStreamSynchronize(streams[0]);
     cudaStreamSynchronize(streams[1]);
   }
@@ -159,51 +156,51 @@ void wrapper() {
   {
     CudaTimer timer("Matrix multiplication on GPU");
     matrix_multplication<<<blocks_per_grid, threads_per_block, 0, streams[0]>>>(
-        d_a, d_b, d_out, cols, rows);
+        d_a, d_b, d_out, M, N, K);
     cuda_error("matrix_multplication");
     cudaStreamSynchronize(streams[0]);
   }
 
   {
     CudaTimer timer("Copying results from device to host");
-    cudaMemcpyAsync(h_out, d_out, bytes, cudaMemcpyDeviceToHost, streams[0]);
+    cudaMemcpyAsync(h_out, d_out, M * K * sizeof(int), cudaMemcpyDeviceToHost,
+                    streams[0]);
     cuda_error("cudaMemcpyAsync d_out to h_out");
     cudaStreamSynchronize(streams[0]);
   }
 
 #ifdef VERIFY_RESULTS
-  // Verify GPU results with CPU computation
   int *h_a;
-  cudaMallocHost(&h_a, bytes);
+  cudaMallocHost(&h_a, M * N * sizeof(int));
   cuda_error("cudaMallocHost h_a");
 
   int *h_b;
-  cudaMallocHost(&h_b, bytes);
+  cudaMallocHost(&h_b, N * K * sizeof(int));
   cuda_error("cudaMallocHost h_b");
 
   {
     CudaTimer timer("VERIFICATION: Copying matrices from device to host");
-    // Start verification copies in parallel
-    cudaMemcpyAsync(h_a, d_a, bytes, cudaMemcpyDeviceToHost, streams[0]);
+    cudaMemcpyAsync(h_a, d_a, M * N * sizeof(int), cudaMemcpyDeviceToHost,
+                    streams[0]);
     cuda_error("cudaMemcpyAsync d_a to h_a");
-    cudaMemcpyAsync(h_b, d_b, bytes, cudaMemcpyDeviceToHost, streams[1]);
+    cudaMemcpyAsync(h_b, d_b, N * K * sizeof(int), cudaMemcpyDeviceToHost,
+                    streams[1]);
     cuda_error("cudaMemcpyAsync d_b to h_b");
-    // Wait for both streams to complete
     cudaStreamSynchronize(streams[0]);
     cudaStreamSynchronize(streams[1]);
   }
 
   int *result;
-  cudaMallocHost(&result, bytes);
+  cudaMallocHost(&result, M * K * sizeof(int));
   cuda_error("VERIFICATION: cudaMallocHost result");
 
   {
     CudaTimer timer("VERIFICATION: Matrix multiplication on CPU");
-    matrix_multiplication_cpu(h_a, h_b, result, cols);
+    matrix_multiplication_cpu(h_a, h_b, result, M, N, K);
   }
 
   // Compare results
-  compare_results(h_out, result, total_size);
+  compare_results(h_out, result, M * K);
 
   // Cleanup
   cudaFreeHost(h_a);
