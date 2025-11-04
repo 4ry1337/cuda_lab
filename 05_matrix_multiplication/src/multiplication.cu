@@ -87,6 +87,13 @@ void wrapper() {
   }
 
   {
+    CudaTimer timer("Matrix multiplication on GPU");
+    // TODO: matrix_multplication
+    cuda_error("matrix_multplication");
+    cudaDeviceSynchronize();
+  }
+
+  {
     CudaTimer timer("Async copying matrices from device to host");
     cudaMemcpyAsync(h_a, d_a, bytes, cudaMemcpyDeviceToHost, stream1);
     cuda_error("cudaMemcpyAsync d_a to h_a");
