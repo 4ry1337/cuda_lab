@@ -17,6 +17,7 @@ NVCC_FLAGS := -arch=$(CUDA_ARCH)
 # -DGMEM
 # -DSMEM
 # -DDBLOCK
+# -DDDBLOCK
 CUDA_OPT_FLAGS ?= -O3 
 
 # Find all the C, C++, and CUDA files we want to compile
