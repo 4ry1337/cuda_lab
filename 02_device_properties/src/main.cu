@@ -9,10 +9,10 @@ void checkCudaError(const char *prefix) {
   }
 }
 
-int main() {
-  cudaDeviceProp device;
-  cudaGetDeviceProperties(&device, 0);
+void device_properties(cudaDeviceProp &device, int device_index = 0) {
+  cudaGetDeviceProperties(&device, device_index);
 
+  printf("  --- General information for device ---\n");
   printf("Name: %s;\n", device.name);
   printf("Compute capability: %d.%d\n", device.major, device.minor);
   printf("Total global memory: %ld\n", device.totalGlobalMem);
@@ -26,6 +26,11 @@ int main() {
          device.maxThreadsDim[1], device.maxThreadsDim[2]);
   printf("Max grid dimensions: (%d, %d, %d)\n", device.maxGridSize[0],
          device.maxGridSize[1], device.maxGridSize[2]);
+  printf("  --- General information for device ---\n");
+}
 
+int main() {
+  cudaDeviceProp device;
+  device_properties(device, 0);
   return 0;
 }
