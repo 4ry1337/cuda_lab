@@ -8,9 +8,9 @@ CUDA_PATH ?= /usr/local/cuda
 NVCC ?= nvcc
 CUDA_ARCH ?= sm_86
 
-# Compiler flags (can be overridden, e.g., make CFLAGS="-O0 -g")
+# Compiler flags
 CFLAGS ?= -O3 -Wall
-CXXFLAGS ?= -O3 -Wall -DVERIFY_RESULTS
+CXXFLAGS ?= -O3 -Wall
 NVCC_FLAGS := -arch=$(CUDA_ARCH) 
 CUDA_OPT_FLAGS ?= -O3 -DVERIFY_RESULTS
 
@@ -19,11 +19,9 @@ CUDA_OPT_FLAGS ?= -O3 -DVERIFY_RESULTS
 SRCS := $(shell find $(SRC_DIRS) -name '*.cpp' -or -name '*.c' -or -name '*.s' -or -name '*.cu')
 
 # Prepends BUILD_DIR and appends .o to every src file
-# As an example, ./your_dir/hello.cpp turns into ./build/./your_dir/hello.cpp.o
 OBJS := $(SRCS:%=$(BUILD_DIR)/%.o)
 
 # String substitution (suffix version without %).
-# As an example, ./build/hello.cpp.o turns into ./build/hello.cpp.d
 DEPS := $(OBJS:.o=.d)
 
 # Every folder in ./src will need to be passed to GCC so that it can find header files
