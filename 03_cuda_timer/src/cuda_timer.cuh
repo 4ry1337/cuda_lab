@@ -22,7 +22,7 @@ public:
 
     float elapsedTime;
     cudaEventElapsedTime(&elapsedTime, start, stop);
-    printf("ELASPSED TIME: %s: %.5f ms; \n", label, elapsedTime);
+    printf("ELAPSED TIME: %s: %.5f ms; \n", label, elapsedTime);
 
     cudaEventDestroy(start);
     cudaEventDestroy(stop);

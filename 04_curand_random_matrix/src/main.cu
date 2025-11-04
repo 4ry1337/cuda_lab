@@ -4,9 +4,9 @@
 #include <cuda_runtime.h>
 
 int main() {
-  const int rows = 8;
-  const int cols = 8;
-  printf("Generating random matrix of size %dx%d\n\n", rows, cols);
+  const size_t rows = 8;
+  const size_t cols = 8;
+  printf("Generating random matrix of size %zux%zu\n\n", rows, cols);
 
   unsigned long seed = time(NULL);
   const int total_size = rows * cols;

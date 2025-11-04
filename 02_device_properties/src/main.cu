@@ -15,10 +15,10 @@ void device_properties(cudaDeviceProp &device, int device_index = 0) {
   printf("  --- General information for device ---\n");
   printf("Name: %s;\n", device.name);
   printf("Compute capability: %d.%d\n", device.major, device.minor);
-  printf("Total global memory: %ld\n", device.totalGlobalMem);
-  printf("Total constant memory: %ld\n", device.totalConstMem);
+  printf("Total global memory: %zu\n", device.totalGlobalMem);
+  printf("Total constant memory: %zu\n", device.totalConstMem);
   printf("Multiprocessor count: %d\n", device.multiProcessorCount);
-  printf("Shared memory per block: %ld\n", device.sharedMemPerBlock);
+  printf("Shared memory per block: %zu\n", device.sharedMemPerBlock);
   printf("Registers per block: %d\n", device.regsPerBlock);
   printf("Threads in warp: %d\n", device.warpSize);
   printf("Max threads Per Block: %d\n", device.maxThreadsPerBlock);
@@ -26,7 +26,7 @@ void device_properties(cudaDeviceProp &device, int device_index = 0) {
          device.maxThreadsDim[1], device.maxThreadsDim[2]);
   printf("Max grid dimensions: (%d, %d, %d)\n", device.maxGridSize[0],
          device.maxGridSize[1], device.maxGridSize[2]);
-  printf("  --- General information for device ---\n");
+  printf("  --- General information for device ---\n\n");
 }
 
 int main() {
