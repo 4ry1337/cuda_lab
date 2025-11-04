@@ -38,6 +38,7 @@
 #include "kernels/03_smem.cuh"
 #include "kernels/04_dblock.cuh"
 #include "kernels/05_ddblock.cuh"
+#include "kernels/06_vectorize.cuh"
 #include "multiplication.cuh"
 #include "random_matrix.cuh"
 #include "utils.cuh"
@@ -215,31 +216,39 @@ void wrapper(KernelType kernel, bool verify_results) {
       break;
     }
     case DBLOCK: {
-      const uint DBLOCK_BM = 64;
-      const uint DBLOCK_BN = 8;
-      const uint DBLOCK_BK = 64;
-      const uint DBLOCK_TM = 8;
+      const uint BM = 64;
+      const uint BN = 8;
+      const uint BK = 64;
+      const uint TM = 8;
       // Template params: <BM, BN, BK, TM> (match kernel definition order!)
       // Grid: {rows, cols} because kernel uses blockIdx.x for out_row,
       // blockIdx.y for out_col
-      matrix_multplication_1d_blocktailing<DBLOCK_BM, DBLOCK_BN, DBLOCK_BK,
-                                           DBLOCK_TM>
-          <<<dim3{CEIL_DIV(M, DBLOCK_BM), CEIL_DIV(K, DBLOCK_BK)},
-             (DBLOCK_BM * DBLOCK_BK) / DBLOCK_TM, 0, streams[0]>>>(
-              d_a, d_b, d_out, M, N, K);
+      matrix_multplication_1d_blocktailing<BM, BN, BK, TM>
+          <<<dim3{CEIL_DIV(M, BM), CEIL_DIV(K, BK)}, (BM * BK) / TM, 0,
+             streams[0]>>>(d_a, d_b, d_out, M, N, K);
       break;
     }
     case DDBLOCK: {
-      const uint DDBLOCK_BM = 64;
-      const uint DDBLOCK_BN = 8;
-      const uint DDBLOCK_BK = 64;
-      const uint DDBLOCK_TM = 8;
-      const uint DDBLOCK_TN = 8;
+      const uint BM = 64;
+      const uint BN = 8;
+      const uint BK = 64;
+      const uint TM = 8;
+      const uint TN = 8;
 
-      matrix_multplication_2d_blocktailing<DDBLOCK_BM, DDBLOCK_BN, DDBLOCK_BK,
-                                           DDBLOCK_TM, DDBLOCK_TN>
-          <<<dim3{CEIL_DIV(M, DDBLOCK_BM), CEIL_DIV(K, DDBLOCK_BK)},
-             (DDBLOCK_BM * DDBLOCK_BK) / (DDBLOCK_TM * DDBLOCK_TN), 0,
+      matrix_multplication_2d_blocktailing<BM, BN, BK, TM, TN>
+          <<<dim3{CEIL_DIV(M, BM), CEIL_DIV(K, BK)}, (BM * BK) / (TM * TN), 0,
+             streams[0]>>>(d_a, d_b, d_out, M, N, K);
+      break;
+    }
+    case VECTORIZE: {
+      const uint BM = 64;
+      const uint BN = 8;
+      const uint BK = 64;
+      const uint TM = 8;
+      const uint TN = 8;
+
+      matrix_multplication_vectorize<BM, BN, BK, TM, TN>
+          <<<dim3{CEIL_DIV(M, BM), CEIL_DIV(K, BK)}, (BM * BK) / (TM * TN), 0,
              streams[0]>>>(d_a, d_b, d_out, M, N, K);
       break;
     }

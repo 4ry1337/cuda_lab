@@ -5,7 +5,7 @@
 
 #define CEIL_DIV(M, N) (((M) + (N) - 1) / (N))
 
-enum KernelType { NAIVE, GMEM, SMEM, DBLOCK, DDBLOCK };
+enum KernelType { NAIVE, GMEM, SMEM, DBLOCK, DDBLOCK, VECTORIZE };
 
 extern void wrapper(KernelType type, bool verify_result);
 
