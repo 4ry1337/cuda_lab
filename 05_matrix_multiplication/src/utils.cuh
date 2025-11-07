@@ -1,9 +1,12 @@
 #ifndef UTILS_CUH_
 #define UTILS_CUH_
 
-#include <iostream>
+#include <cstddef>
+#include <cstdio>
 
-void cuda_error(const char *prefix) {
+#define CEIL_DIV(M, N) (((M) + (N) - 1) / (N))
+
+inline void cuda_error(const char *prefix) {
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf("%s: %s\n", prefix, cudaGetErrorString(err));
@@ -11,35 +14,53 @@ void cuda_error(const char *prefix) {
   }
 }
 
-// Utility function to print matrix
-template <typename T>
-void print_matrix(T *h_matrix, int rows, int cols, int max_display = 10) {
-  int display_rows = (rows < max_display) ? rows : max_display;
-  int display_cols = (cols < max_display) ? cols : max_display;
+inline void print_device_properties(cudaDeviceProp &device) {
+  printf("  --- General information for device ---\n");
+  printf("Name: %s;\n", device.name);
+  printf("Compute capability: %d.%d\n", device.major, device.minor);
+  printf("Total global memory: %zu\n", device.totalGlobalMem);
+  printf("Total constant memory: %zu\n", device.totalConstMem);
+  printf("Multiprocessor count: %d\n", device.multiProcessorCount);
+  printf("Shared memory per block: %zu\n", device.sharedMemPerBlock);
+  printf("Registers per block: %d\n", device.regsPerBlock);
+  printf("Threads in warp: %d\n", device.warpSize);
+  printf("Max threads Per Block: %d\n", device.maxThreadsPerBlock);
+  printf("Max thread dimensions: (%d, %d, %d)\n", device.maxThreadsDim[0],
+         device.maxThreadsDim[1], device.maxThreadsDim[2]);
+  printf("Max grid dimensions: (%d, %d, %d)\n", device.maxGridSize[0],
+         device.maxGridSize[1], device.maxGridSize[2]);
+  printf("  --- General information for device ---\n\n");
+}
 
-  std::cout << "Matrix (" << rows << "x" << cols;
+template <typename T>
+inline void print_matrix(T *h_matrix, int rows, int cols,
+                         int max_display = 10) {
+  std::size_t display_rows = (rows < max_display) ? rows : max_display;
+  std::size_t display_cols = (cols < max_display) ? cols : max_display;
+
+  printf("Matrix (%dx%d", rows, cols);
   if (rows > max_display || cols > max_display) {
-    std::cout << ", showing " << display_rows << "x" << display_cols;
+    printf(", showing %zux%zu", display_rows, display_cols);
   }
-  std::cout << "):" << std::endl;
+  printf("):\n");
 
   for (int i = 0; i < display_rows; i++) {
     for (int j = 0; j < display_cols; j++) {
-      std::cout << h_matrix[i * cols + j] << "\t";
+      printf("%g\t", (double)h_matrix[i * cols + j]);
     }
     if (cols > max_display) {
-      std::cout << "...";
+      printf("...");
     }
-    std::cout << std::endl;
+    printf("\n");
   }
   if (rows > max_display) {
     for (int j = 0; j < display_cols; j++) {
-      std::cout << ".\t";
+      printf(".\t");
     }
     if (cols > max_display) {
-      std::cout << "...";
+      printf("...");
     }
-    std::cout << std::endl;
+    printf("\n");
   }
 }
 

@@ -1,7 +1,7 @@
 #include <chrono>
 #include <stdio.h>
 
-void checkCudaError(const char *prefix) {
+void cuda_error(const char *prefix) {
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf("%s: %s\n", prefix, cudaGetErrorString(err));
@@ -23,12 +23,13 @@ int main() {
   auto start = std::chrono::high_resolution_clock::now();
 
   kernel<<<threads, block>>>();
-  checkCudaError("Launch failed");
+  cuda_error("Launch failed");
 
   cudaDeviceSynchronize();
-  checkCudaError("Synchronization failed");
+  cuda_error("Synchronization failed");
 
   auto end = std::chrono::high_resolution_clock::now();
+
   auto duration =
       std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 

@@ -1,8 +1,7 @@
 #ifndef CUDA_TIMER_H_
 #define CUDA_TIMER_H_
 
-#include <cuda_runtime.h>
-#include <stdio.h>
+#include <cstdio>
 
 class CudaTimer {
 private:
