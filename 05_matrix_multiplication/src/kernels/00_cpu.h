@@ -1,21 +1,18 @@
 #ifndef CPU_H_
 #define CPU_H_
 
-// CPU reference implementation: C = A × B
-// A is M×N, B is N×K, C is M×K
+// CPU matrix multiplication: C = A × B
+// A[M][N] B[N][K] C[M][K]
 // Used for verification of GPU results
-#include <cstddef>
-
-inline void matrix_multiplication_cpu(int *h_a, int *h_b, int *h_out,
-                                      std::size_t M, std::size_t N,
-                                      std::size_t K) {
-  for (std::size_t x = 0; x < M; x++) {
-    for (std::size_t y = 0; y < K; y++) {
+inline void matrix_multiplication_cpu(int *h_a, int *h_b, int *h_c, uint m,
+                                      uint n, uint k) {
+  for (uint c_row = 0; c_row < m; c_row++) {
+    for (uint c_col = 0; c_col < k; c_col++) {
       int val = 0;
-      for (std::size_t z = 0; z < N; z++) {
-        val += h_a[x * N + z] * h_b[z * K + y];
+      for (uint i = 0; i < n; i++) {
+        val += h_a[c_row * n + i] * h_b[i * k + c_col];
       }
-      h_out[x * K + y] = val;
+      h_c[c_row * k + c_col] = val;
     }
   }
 }

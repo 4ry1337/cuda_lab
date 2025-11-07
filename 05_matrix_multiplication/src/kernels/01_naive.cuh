@@ -2,22 +2,19 @@
 #define NAIVE_CUH_
 
 // Naive matrix multiplication: C = A × B
-// A is M×N, B is N×K, C is M×K
-#include <cstddef>
-
-__global__ void matrix_multplication_naive(int *d_a, int *d_b, int *d_out,
-                                           std::size_t M, std::size_t N,
-                                           std::size_t K) {
-  std::size_t x = threadIdx.x + blockIdx.x * blockDim.x; // column (x-axis)
-  std::size_t y = threadIdx.y + blockIdx.y * blockDim.y; // row (y-axis)
+// A[M][N] B[N][K] C[M][K]
+__global__ void matrix_multplication_naive(int *d_a, int *d_b, int *d_c, uint m,
+                                           uint n, uint k) {
+  uint c_row = threadIdx.x + blockIdx.x * blockDim.x; // column (x-axis)
+  uint c_col = threadIdx.y + blockIdx.y * blockDim.y; // row (y-axis)
 
   // Check bounds: ensure we're within the output matrix C (M×K)
-  if ((y < M) && (x < K)) {
+  if ((c_col < m) && (c_row < k)) {
     int val = 0;
-    for (std::size_t i = 0; i < N; i++) {
-      val += d_a[y * N + i] * d_b[i * K + x];
+    for (uint i = 0; i < n; i++) {
+      val += d_a[c_col * n + i] * d_b[i * k + c_row];
     }
-    d_out[y * K + x] = val;
+    d_c[c_col * k + c_row] = val;
   }
 }
 
