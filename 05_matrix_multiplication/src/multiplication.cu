@@ -1,35 +1,5 @@
-/*
- * Matrix Multiplication: A × B = C
- *
- * DIMENSION CONVENTIONS:
- * =====================
- * Matrix A: M rows × N columns (M×N)
- * Matrix B: N rows × K columns (N×K)
- * Matrix C: M rows × K columns (M×K) [output]
- *
- * CUDA GRID/THREAD MAPPING:
- * =========================
- * For a matrix with R rows × C columns, the grid is configured as:
- *   dim3 grid{CEIL_DIV(C, 32), CEIL_DIV(R, 32)}
- *                     ^^^^                ^^^^
- *                   columns              rows
- *
- * This is because CUDA convention maps:
- *   - gridDim.x (1st parameter) → blockIdx.x → x-axis → COLUMNS
- *   - gridDim.y (2nd parameter) → blockIdx.y → y-axis → ROWS
- *
- * Inside kernel, each thread computes:
- *   int col = threadIdx.x + blockIdx.x * blockDim.x;  (column index)
- *   int row = threadIdx.y + blockIdx.y * blockDim.y;  (row index)
- *
- * MEMORY LAYOUT (Row-Major):
- * ==========================
- * Element at [row][col] is stored at linear index: row * num_cols + col
- *
- * Example: For 1024×512 matrix, element [5][10] is at: 5 * 512 + 10 = 2570
- */
-
 #include <cassert>
+#include <stdexcept>
 
 #include "cuda_timer.cuh"
 #include "kernels/00_cpu.h"
@@ -43,142 +13,76 @@
 #include "random_matrix.cuh"
 #include "utils.cuh"
 
-void device_properties(cudaDeviceProp &device) {
-  printf("  --- General information for device ---\n");
-  printf("Name: %s;\n", device.name);
-  printf("Compute capability: %d.%d\n", device.major, device.minor);
-  printf("Total global memory: %zu\n", device.totalGlobalMem);
-  printf("Total constant memory: %zu\n", device.totalConstMem);
-  printf("Multiprocessor count: %d\n", device.multiProcessorCount);
-  printf("Shared memory per block: %zu\n", device.sharedMemPerBlock);
-  printf("Registers per block: %d\n", device.regsPerBlock);
-  printf("Threads in warp: %d\n", device.warpSize);
-  printf("Max threads Per Block: %d\n", device.maxThreadsPerBlock);
-  printf("Max thread dimensions: (%d, %d, %d)\n", device.maxThreadsDim[0],
-         device.maxThreadsDim[1], device.maxThreadsDim[2]);
-  printf("Max grid dimensions: (%d, %d, %d)\n", device.maxGridSize[0],
-         device.maxGridSize[1], device.maxGridSize[2]);
-  printf("  --- General information for device ---\n\n");
-}
-
 // sources:
 // [1] https://khushi-411.github.io/multidim_grids_and_data/#link2
 // [2] https://siboehm.com/articles/22/CUDA-MMM
-
-bool compare_results(int *gpu_result, int *cpu_result, size_t total_size,
-                     int max_errors_to_show = 10) {
-  bool results_match = true;
-  int errors_shown = 0;
-
-  for (size_t i = 0; i < total_size; i++) {
-    if (gpu_result[i] != cpu_result[i]) {
-      if (errors_shown < max_errors_to_show) {
-        printf("Mismatch at index %zu: GPU=%d, CPU=%d\n", i, gpu_result[i],
-               cpu_result[i]);
-        errors_shown++;
-      }
-      results_match = false;
-    }
-  }
-
-  if (results_match) {
-    printf("\nResults match!\n");
-  } else {
-    printf("\nResults DO NOT match! (%d+ errors found)\n", errors_shown);
-  }
-
-  return results_match;
-}
 
 void wrapper(KernelType kernel, bool verify_results) {
   int device_id;
   cudaGetDevice(&device_id);
   cudaDeviceProp device;
   cudaGetDeviceProperties(&device, device_id);
-  // device_properties(device);
-
-  // Matrix multiplication: A × B = C
-  // A is M×N, B is N×K, C is M×K
-  // Formula: (M rows × N cols) × (N rows × K cols) = (M rows × K cols)
-  uint M = 1024, N = 512 + 256, K = 512;
-
-  // Concrete example with current values (M=1024, N=768, K=512):
-  //   A[1024×768] × B[768×512] = C[1024×512]
-  //   (1024 rows,    (768 rows,    (1024 rows,
-  //    768 cols)      512 cols)     512 cols)
-
-  // pinned host matrices (for async copy)
-  int *h_out;                                  // Output matrix C (M×K)
-  cudaMallocHost(&h_out, M * K * sizeof(int)); // 1024×512 = 524,288 ints
-  cuda_error("cudaMallocHost h_out");
-
-  // device matrices
-  int *d_a;                              // Matrix A (M×N)
-  cudaMalloc(&d_a, M * N * sizeof(int)); // 1024×768 = 786,432 ints
-  cuda_error("cudaMalloc d_a");
-
-  int *d_b;                              // Matrix B (N×K)
-  cudaMalloc(&d_b, N * K * sizeof(int)); // 768×512 = 393,216 ints
-  cuda_error("cudaMalloc d_b");
-
-  int *d_out;                              // Output matrix C (M×K)
-  cudaMalloc(&d_out, M * K * sizeof(int)); // 1024×512 = 524,288 ints
-  cuda_error("cudaMalloc d_out");
-
-  // random matrix
-  unsigned long seed = 42; // time(NULL);
-  const int num_states = 1024;
-  curandState *d_states;
-  cudaMalloc(&d_states, num_states * sizeof(curandState));
-  cuda_error("cudaMalloc d_states");
+  // print_device_properties(device);
 
   // streams
   cudaStream_t streams[2];
   cudaStreamCreate(&streams[0]);
-  cuda_error("cudaStreamCreate streams[0]");
   cudaStreamCreate(&streams[1]);
-  cuda_error("cudaStreamCreate streams[1]");
 
-  // CUDA thread block configuration
-  // - blockDim.x = 32 (threads per block in x-direction, handles columns)
-  // - blockDim.y = 32 (threads per block in y-direction, handles rows)
-  dim3 threads_per_block(32, 32, 1);
+  // A[M][N] B[N][K] C[M][K]
+  uint M = 1024, N = 512 + 256, K = 512;
+
+  const size_t a_bytes = M * N * sizeof(int), b_bytes = N * K * sizeof(int),
+               c_bytes = M * K * sizeof(int);
+
+  // pinned host matrices (for async copy)
+  int *h_c;
+  cudaMallocHost(&h_c, c_bytes);
+
+  // device matrices
+  int *d_a;
+  cudaMalloc(&d_a, a_bytes);
+
+  int *d_b;
+  cudaMalloc(&d_b, b_bytes);
+
+  int *d_c;
+  cudaMalloc(&d_c, c_bytes);
+
+  // random matrix
+  unsigned long seed = 42;
+  const int max_val = 101;
+  // unsigned long seed = time(NULL);
+  const int num_states = 1024;
+  curandState *d_states;
+  cudaMalloc(&d_states, num_states * sizeof(curandState));
 
   {
     CudaTimer timer("Initializing cuRAND states");
     init_curand_states<<<CEIL_DIV(num_states, 256), 256, 0, streams[0]>>>(
         d_states, seed, num_states);
+    cuda_error("FAILED: Initializing cuRAND states: kernel launch");
     cudaStreamSynchronize(streams[0]);
   }
 
   {
-    CudaTimer timer("Generating random matrices on GPU");
+    // CUDA thread block configuration
+    CudaTimer timer("Generating random matrices (d_a, d_b)");
 
-    // Generate matrix A (M×N = 1024 rows × 768 cols)
-    // IMPORTANT: dim3{x, y} where x controls columns, y controls rows
-    // Grid dimensions: {CEIL_DIV(cols, 32), CEIL_DIV(rows, 32)}
-    //                = {CEIL_DIV(768, 32), CEIL_DIV(1024, 32)}
-    //                = {24 blocks, 32 blocks}
-    generate_random_matrix_int<<<dim3{CEIL_DIV(N, 32), CEIL_DIV(M, 32)},
-                                 threads_per_block, 0, streams[0]>>>(
-        d_states, d_a, M, N, 100, num_states);
-    cuda_error("generate_random_matrix_int A");
+    random_matrix<<<dim3{CEIL_DIV(N, 32), CEIL_DIV(M, 32)}, dim3{32, 32}, 0,
+                    streams[0]>>>(num_states, d_states, d_a, M, N, max_val);
+    cuda_error("FAIELD: Generating random matrix (d_a): kernel launch");
 
-    // Generate matrix B (N×K = 768 rows × 512 cols)
-    // Grid dimensions: {CEIL_DIV(cols, 32), CEIL_DIV(rows, 32)}
-    //                = {CEIL_DIV(512, 32), CEIL_DIV(768, 32)}
-    //                = {16 blocks, 24 blocks}
-    generate_random_matrix_int<<<dim3{CEIL_DIV(K, 32), CEIL_DIV(N, 32)},
-                                 threads_per_block, 0, streams[1]>>>(
-        d_states, d_b, N, K, 100, num_states);
-    cuda_error("generate_random_matrix_int B");
+    random_matrix<<<dim3{CEIL_DIV(K, 32), CEIL_DIV(N, 32)}, dim3{32, 32}, 0,
+                    streams[1]>>>(num_states, d_states, d_b, N, K, max_val);
+    cuda_error("FAIELD: Generating random matrix (d_b): kernel launch");
+
     cudaStreamSynchronize(streams[0]);
     cudaStreamSynchronize(streams[1]);
   }
 
   {
-    CudaTimer timer("Matrix multiplication on GPU");
-
+    CudaTimer timer("Matrix multiplication");
     switch (kernel) {
     case NAIVE: {
       // Compute C = A × B where C is M×K (1024 rows × 512 cols)
@@ -194,8 +98,9 @@ void wrapper(KernelType kernel, bool verify_results) {
       //   - gridDim.x (1st param) controls blockIdx.x → x-axis → columns
       //   - gridDim.y (2nd param) controls blockIdx.y → y-axis → rows
       matrix_multplication_naive<<<dim3{CEIL_DIV(K, 32), CEIL_DIV(M, 32)},
-                                   threads_per_block, 0, streams[0]>>>(
-          d_a, d_b, d_out, M, N, K);
+                                   dim3{32, 32}, 0, streams[0]>>>(d_a, d_b, d_c,
+                                                                  M, N, K);
+      cuda_error("FAIELD: MATRIX MULTPLICATION: NAIVE");
       break;
     }
     case GMEM: {
@@ -206,13 +111,15 @@ void wrapper(KernelType kernel, bool verify_results) {
       //   row = threadIdx.x / 32  (for memory coalescing in row-major layout)
       matrix_multplication_gmem<32>
           <<<dim3{CEIL_DIV(K, 32), CEIL_DIV(M, 32)}, 32 * 32, 0, streams[0]>>>(
-              d_a, d_b, d_out, M, N, K);
+              d_a, d_b, d_c, M, N, K);
+      cuda_error("FAIELD: MATRIX MULTPLICATION: GMEM");
       break;
     }
     case SMEM: {
       matrix_multplication_smem<32>
           <<<dim3{CEIL_DIV(K, 32), CEIL_DIV(M, 32)}, 32 * 32, 0, streams[0]>>>(
-              d_a, d_b, d_out, M, N, K);
+              d_a, d_b, d_c, M, N, K);
+      cuda_error("FAIELD: MATRIX MULTPLICATION: SMEM");
       break;
     }
     case DBLOCK: {
@@ -225,7 +132,8 @@ void wrapper(KernelType kernel, bool verify_results) {
       // blockIdx.y for out_col
       matrix_multplication_1d_blocktailing<BM, BN, BK, TM>
           <<<dim3{CEIL_DIV(M, BM), CEIL_DIV(K, BK)}, (BM * BK) / TM, 0,
-             streams[0]>>>(d_a, d_b, d_out, M, N, K);
+             streams[0]>>>(d_a, d_b, d_c, M, N, K);
+      cuda_error("FAIELD: MATRIX MULTPLICATION: DBLOCK");
       break;
     }
     case DDBLOCK: {
@@ -237,7 +145,8 @@ void wrapper(KernelType kernel, bool verify_results) {
 
       matrix_multplication_2d_blocktailing<BM, BN, BK, TM, TN>
           <<<dim3{CEIL_DIV(M, BM), CEIL_DIV(K, BK)}, (BM * BK) / (TM * TN), 0,
-             streams[0]>>>(d_a, d_b, d_out, M, N, K);
+             streams[0]>>>(d_a, d_b, d_c, M, N, K);
+      cuda_error("FAIELD: MATRIX MULTPLICATION: DDBLOCK");
       break;
     }
     case VECTORIZE: {
@@ -249,7 +158,8 @@ void wrapper(KernelType kernel, bool verify_results) {
 
       matrix_multplication_vectorize<BM, BN, BK, TM, TN>
           <<<dim3{CEIL_DIV(M, BM), CEIL_DIV(K, BK)}, (BM * BK) / (TM * TN), 0,
-             streams[0]>>>(d_a, d_b, d_out, M, N, K);
+             streams[0]>>>(d_a, d_b, d_c, M, N, K);
+      cuda_error("FAIELD: MATRIX MULTPLICATION: VECTORIZE");
       break;
     }
     default:
@@ -261,7 +171,7 @@ void wrapper(KernelType kernel, bool verify_results) {
 
   {
     CudaTimer timer("Copying results from device to host");
-    cudaMemcpyAsync(h_out, d_out, M * K * sizeof(int), cudaMemcpyDeviceToHost,
+    cudaMemcpyAsync(h_c, d_c, M * K * sizeof(int), cudaMemcpyDeviceToHost,
                     streams[0]);
     cuda_error("cudaMemcpyAsync d_out to h_out");
     cudaStreamSynchronize(streams[0]);
@@ -269,48 +179,62 @@ void wrapper(KernelType kernel, bool verify_results) {
 
   if (verify_results) {
     int *h_a;
-    cudaMallocHost(&h_a, M * N * sizeof(int));
+    cudaMallocHost(&h_a, a_bytes);
     cuda_error("cudaMallocHost h_a");
 
     int *h_b;
-    cudaMallocHost(&h_b, N * K * sizeof(int));
+    cudaMallocHost(&h_b, b_bytes);
     cuda_error("cudaMallocHost h_b");
 
     {
-      CudaTimer timer("Verifing - copying matrices from device to host");
-      cudaMemcpyAsync(h_a, d_a, M * N * sizeof(int), cudaMemcpyDeviceToHost,
-                      streams[0]);
+      CudaTimer timer("Verifing: copying (d_a to h_a) and (d_b to h_b)");
+      cudaMemcpyAsync(h_a, d_a, a_bytes, cudaMemcpyDeviceToHost, streams[0]);
       cuda_error("cudaMemcpyAsync d_a to h_a");
-      cudaMemcpyAsync(h_b, d_b, N * K * sizeof(int), cudaMemcpyDeviceToHost,
-                      streams[1]);
+      cudaMemcpyAsync(h_b, d_b, b_bytes, cudaMemcpyDeviceToHost, streams[1]);
       cuda_error("cudaMemcpyAsync d_b to h_b");
       cudaStreamSynchronize(streams[0]);
       cudaStreamSynchronize(streams[1]);
     }
 
-    int *result;
-    cudaMallocHost(&result, M * K * sizeof(int));
+    int *cpu_c;
+    cudaMallocHost(&cpu_c, c_bytes);
     cuda_error("cudaMallocHost result");
 
     {
-      CudaTimer timer("Verifing - Matrix multiplication on CPU");
-      matrix_multiplication_cpu(h_a, h_b, result, M, N, K);
+      CudaTimer timer("Verifing: Matrix multiplication: CPU");
+      matrix_multiplication_cpu(h_a, h_b, cpu_c, M, N, K);
     }
 
-    // Compare results
-    compare_results(h_out, result, M * K);
+    bool results_match = true;
+    int errors_shown = 0;
 
-    // Cleanup
+    for (size_t i = 0; i < M * K; i++) {
+      if (h_c[i] != cpu_c[i]) {
+        if (errors_shown < 10) {
+          printf("Verifing: Mismatch: i=%zu, GPU=%d, CPU=%d\n", i, h_c[i],
+                 cpu_c[i]);
+          errors_shown++;
+        }
+        results_match = false;
+      }
+    }
+
+    if (results_match) {
+      printf("\nVerifing: Results match!\n");
+    } else {
+      printf("\nVerifing: Results DO NOT match! (%d+ errors found)\n",
+             errors_shown);
+    }
+
     cudaFreeHost(h_a);
     cudaFreeHost(h_b);
-    cudaFreeHost(result);
+    cudaFreeHost(cpu_c);
   }
 
-  // Cleanup
-  cudaFreeHost(h_out);
+  cudaFreeHost(h_c);
   cudaFree(d_a);
   cudaFree(d_b);
-  cudaFree(d_out);
+  cudaFree(d_c);
   cudaFree(d_states);
   cudaStreamDestroy(streams[0]);
   cudaStreamDestroy(streams[1]);

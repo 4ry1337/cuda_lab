@@ -1,6 +1,6 @@
 #include "multiplication.cuh"
 
 int main(int argc, char *argv[]) {
-  wrapper(VECTORIZE, true);
+  wrapper(SMEM, true);
   return 0;
 }
