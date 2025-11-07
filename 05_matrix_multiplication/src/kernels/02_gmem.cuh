@@ -2,7 +2,7 @@
 #define GMEM_CUH_
 
 // Global memory coalescing implementation: C = A × B
-// A is M×N, B is N×K, C is M×K
+// A[M][N] B[N][K] C[M][K]
 // BLOCKSIZE: compile-time constant (typically 32) for better memory access
 // patterns
 //
@@ -21,29 +21,21 @@
 //     ...
 // - This ensures adjacent threads write to adjacent memory addresses
 // - GPU can coalesce these into fewer memory transactions (better performance!)
-//
 template <const size_t BLOCKSIZE>
-__global__ void matrix_multplication_gmem(int *d_a, int *d_b, int *d_out,
-                                          size_t M, size_t N, size_t K) {
-  // Calculate global thread indices using linear thread ID (threadIdx.x)
-  // This improves memory coalescing by having adjacent threads access adjacent
-  // memory addresses in row-major layout
-  // x = column index in output matrix C (ranges 0 to K-1)
-  // y = row index in output matrix C (ranges 0 to M-1)
-  const int x = blockIdx.x * BLOCKSIZE + (threadIdx.x % BLOCKSIZE); // column
-  const int y = blockIdx.y * BLOCKSIZE + (threadIdx.x / BLOCKSIZE); // row
+__global__ void matrix_multplication_gmem(int *d_a, int *d_b, int *d_c,
+                                          size_t m, size_t n, size_t k) {
+  const int c_col =
+      blockIdx.x * BLOCKSIZE + (threadIdx.x % BLOCKSIZE); // column
+  const int c_row = blockIdx.y * BLOCKSIZE + (threadIdx.x / BLOCKSIZE); // row
 
-  // Check bounds: ensure we're within the output matrix C (M×K)
-  if ((y < M) && (x < K)) {
+  if ((c_row < m) && (c_col < k)) {
     int val = 0;
-
-    // Compute dot product: C[y][x] = sum(A[y][i] * B[i][x]) for i=0 to N-1
-    for (size_t i = 0; i < N; i++) {
-      val += d_a[y * N + i] * d_b[i * K + x];
+    for (size_t i = 0; i < n; i++) {
+      // This part is sequentially accessed WITHIN a thread, so coalescing
+      // thread to memory address in a warp is not applied here
+      val += d_a[c_row * n + i] * d_b[i * k + c_col];
     }
-
-    // Store result in C[y][x]
-    d_out[y * K + x] = val;
+    d_c[c_row * k + c_col] = val;
   }
 }
 
