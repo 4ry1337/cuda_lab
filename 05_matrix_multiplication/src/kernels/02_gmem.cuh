@@ -24,15 +24,12 @@
 template <const size_t BLOCKSIZE>
 __global__ void matrix_multplication_gmem(int *d_a, int *d_b, int *d_c,
                                           size_t m, size_t n, size_t k) {
-  const int c_col =
-      blockIdx.x * BLOCKSIZE + (threadIdx.x % BLOCKSIZE); // column
-  const int c_row = blockIdx.y * BLOCKSIZE + (threadIdx.x / BLOCKSIZE); // row
+  const int c_row = blockIdx.x * BLOCKSIZE + (threadIdx.x / BLOCKSIZE);
+  const int c_col = blockIdx.y * BLOCKSIZE + (threadIdx.x % BLOCKSIZE);
 
   if ((c_row < m) && (c_col < k)) {
     int val = 0;
-    for (size_t i = 0; i < n; i++) {
-      // This part is sequentially accessed WITHIN a thread, so coalescing
-      // thread to memory address in a warp is not applied here
+    for (uint i = 0; i < n; i++) {
       val += d_a[c_row * n + i] * d_b[i * k + c_col];
     }
     d_c[c_row * k + c_col] = val;

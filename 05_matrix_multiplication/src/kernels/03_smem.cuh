@@ -11,8 +11,8 @@ __global__ void matrix_multplication_smem(int *d_a, int *d_b, int *d_c,
                                           size_t m, size_t n, size_t k) {
   // Allocate shared memory buffers for tiles
   // These are shared by all threads in this block
-  __shared__ float s_a[BLOCKSIZE * BLOCKSIZE];
-  __shared__ float s_b[BLOCKSIZE * BLOCKSIZE];
+  __shared__ int s_a[BLOCKSIZE * BLOCKSIZE];
+  __shared__ int s_b[BLOCKSIZE * BLOCKSIZE];
 
   // Calculate thread's position within its tile (local coordinates)
   // Using 1D thread indexing (threadIdx.x) mapped to 2D tile positions
@@ -62,7 +62,7 @@ __global__ void matrix_multplication_smem(int *d_a, int *d_b, int *d_c,
     // tile Prevents overwriting shared memory while other threads still need it
     __syncthreads();
   }
-  d_c[thread_row * n + thread_col] = val;
+  d_c[thread_row * k + thread_col] = val;
 }
 
 #endif // !SMEM_CUH_
