@@ -5,13 +5,13 @@
 //
 // Key optimization: Uses tiled computation with shared memory to reduce global
 // memory accesses. Shared memory is ~100x faster than global memory.
-template <const int BLOCKSIZE>
-__global__ void matrix_multplication_smem(int *d_a, int *d_b, int *d_c,
-                                          size_t m, size_t n, size_t k) {
+template <typename T, const int BLOCKSIZE>
+__global__ void matrix_multplication_smem(T *d_a, T *d_b, T *d_c, uint m,
+                                          uint n, uint k) {
   // Allocate shared memory buffers for tiles
   // These are shared by all threads in this block
-  __shared__ int s_a[BLOCKSIZE * BLOCKSIZE];
-  __shared__ int s_b[BLOCKSIZE * BLOCKSIZE];
+  __shared__ T s_a[BLOCKSIZE * BLOCKSIZE];
+  __shared__ T s_b[BLOCKSIZE * BLOCKSIZE];
 
   // Calculate thread's position within its tile (local coordinates)
   // Using 1D thread indexing (threadIdx.x) mapped to 2D tile positions
@@ -33,11 +33,11 @@ __global__ void matrix_multplication_smem(int *d_a, int *d_b, int *d_c,
   // Output position in C
   d_c += block_row * BLOCKSIZE * k + block_col * BLOCKSIZE;
 
-  int val = 0;
+  T val = 0;
 
   // Loop through tiles along the shared dimension (N)
   // For C[i][j] = sum(A[i][k] * B[k][j]), we process k in BLOCKSIZE chunks
-  for (int block_id = 0; block_id < n; block_id += BLOCKSIZE) {
+  for (uint block_id = 0; block_id < n; block_id += BLOCKSIZE) {
     // Cooperatively load one tile from A and B into shared memory
     // Each thread loads one element from global → shared memory
     s_a[thread_row * BLOCKSIZE + thread_col] = d_a[thread_row * n + thread_col];
@@ -54,7 +54,7 @@ __global__ void matrix_multplication_smem(int *d_a, int *d_b, int *d_c,
     // Compute partial dot product using data from shared memory
     // This is where we benefit: BLOCKSIZE reads from fast shared memory
     // instead of slow global memory
-    for (int i = 0; i < BLOCKSIZE; i++) {
+    for (uint i = 0; i < BLOCKSIZE; i++) {
       val += s_a[thread_row * BLOCKSIZE + i] * s_b[i * BLOCKSIZE + thread_col];
     }
     // Wait for all threads to finish computing before loading next

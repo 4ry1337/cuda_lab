@@ -3,7 +3,7 @@
 
 enum KernelType { NAIVE, GMEM, SMEM, DBLOCK, DDBLOCK, VECTORIZE };
 
-void wrapper(KernelType type, bool verify_result);
+template <typename T> void wrapper(KernelType type, bool verify_result);
 
 inline const char *to_string(KernelType v) {
   switch (v) {

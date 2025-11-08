@@ -21,14 +21,14 @@
 //     ...
 // - This ensures adjacent threads write to adjacent memory addresses
 // - GPU can coalesce these into fewer memory transactions (better performance!)
-template <const size_t BLOCKSIZE>
-__global__ void matrix_multplication_gmem(int *d_a, int *d_b, int *d_c,
-                                          size_t m, size_t n, size_t k) {
-  const int c_row = blockIdx.x * BLOCKSIZE + (threadIdx.x / BLOCKSIZE);
-  const int c_col = blockIdx.y * BLOCKSIZE + (threadIdx.x % BLOCKSIZE);
+template <typename T, const uint BLOCKSIZE>
+__global__ void matrix_multplication_gmem(T *d_a, T *d_b, T *d_c, uint m,
+                                          uint n, uint k) {
+  const uint c_row = blockIdx.x * BLOCKSIZE + (threadIdx.x / BLOCKSIZE);
+  const uint c_col = blockIdx.y * BLOCKSIZE + (threadIdx.x % BLOCKSIZE);
 
   if ((c_row < m) && (c_col < k)) {
-    int val = 0;
+    T val = 0;
     for (uint i = 0; i < n; i++) {
       val += d_a[c_row * n + i] * d_b[i * k + c_col];
     }

@@ -15,10 +15,10 @@
 // Each thread computes TM×TN output elements (a 2D tile)
 // Uses shared memory + register caching for maximum data reuse
 //
-template <const int BM, const int BN, const int BK, const int TM, const int TN>
-__global__ void matrix_multplication_2d_blocktailing(int *d_a, int *d_b,
-                                                     int *d_out, size_t M,
-                                                     size_t N, size_t K) {
+template <typename T, const int BM, const int BN, const int BK, const int TM,
+          const int TN>
+__global__ void matrix_multplication_2d_blocktailing(T *d_a, T *d_b, T *d_out,
+                                                     uint M, uint N, uint K) {
   // Block-level tile indices in output matrix
   const uint out_row = blockIdx.x;
   const uint out_col = blockIdx.y;
@@ -30,8 +30,8 @@ __global__ void matrix_multplication_2d_blocktailing(int *d_a, int *d_b,
   const uint thread_col = threadIdx.x % (BK / TN);
   const uint thread_row = threadIdx.x / (BK / TN);
 
-  __shared__ int s_a[BM * BN];
-  __shared__ int s_b[BN * BK];
+  __shared__ T s_a[BM * BN];
+  __shared__ T s_b[BN * BK];
 
   d_a += out_row * BM * N;                  // row=cRow, col=0
   d_b += out_col * BK;                      // row=0, col=cCol
@@ -50,11 +50,11 @@ __global__ void matrix_multplication_2d_blocktailing(int *d_a, int *d_b,
   // across columns)
   const uint stride_b = num_threads_per_blocktile / BK;
 
-  int thread_results[TM * TN] = {0};
+  T thread_results[TM * TN] = {0};
 
   // register caches for As and Bs
-  int reg_m[TM] = {0};
-  int reg_n[TN] = {0};
+  T reg_m[TM] = {0};
+  T reg_n[TN] = {0};
 
   for (uint block_id = 0; block_id < N; block_id += BN) {
     // populate the SMEM caches
