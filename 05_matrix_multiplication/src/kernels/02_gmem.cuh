@@ -1,8 +1,8 @@
 #ifndef GMEM_CUH_
 #define GMEM_CUH_
 
-// Global memory coalescing implementation: C = A × B
-// A[M][N] B[N][K] C[M][K]
+// Global memory (GMEM) coalescing implementation
+//
 // BLOCKSIZE: compile-time constant (typically 32) for better memory access
 // patterns
 //

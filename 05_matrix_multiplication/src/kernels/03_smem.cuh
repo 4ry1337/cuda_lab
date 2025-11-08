@@ -1,8 +1,7 @@
 #ifndef SMEM_CUH_
 #define SMEM_CUH_
 
-// Shared Memory (SMEM) optimized matrix multiplication: C = A × B
-// A[M][N] B[N][K] C[M][K]
+// Shared Memory (SMEM) matrix multiplication
 //
 // Key optimization: Uses tiled computation with shared memory to reduce global
 // memory accesses. Shared memory is ~100x faster than global memory.

@@ -1,4 +1,3 @@
-#include <cassert>
 #include <stdexcept>
 
 #include "cuda_timer.cuh"
@@ -13,16 +12,15 @@
 #include "random_matrix.cuh"
 #include "utils.cuh"
 
-// sources:
+// Sources:
 // [1] https://khushi-411.github.io/multidim_grids_and_data/#link2
 // [2] https://siboehm.com/articles/22/CUDA-MMM
-
 void wrapper(KernelType kernel, bool verify_results) {
   int device_id;
   cudaGetDevice(&device_id);
   cudaDeviceProp device;
   cudaGetDeviceProperties(&device, device_id);
-  // print_device_properties(device);
+  print_device_properties(device);
 
   // streams
   cudaStream_t streams[2];
@@ -82,42 +80,26 @@ void wrapper(KernelType kernel, bool verify_results) {
   }
 
   {
-    CudaTimer timer("Matrix multiplication");
+    char title[50] = "Matrix multiplication: ";
+    CudaTimer timer(strcat(title, to_string(kernel)));
     switch (kernel) {
     case NAIVE: {
-      // Compute C = A × B where C is M×K (1024 rows × 512 cols)
-      // Grid dimensions: {CEIL_DIV(cols, 32), CEIL_DIV(rows, 32)}
-      //                = {CEIL_DIV(512, 32), CEIL_DIV(1024, 32)}
-      //                = {16 blocks, 32 blocks}
-      //
-      // Each thread computes ONE element C[row][col]:
-      //   - threadIdx.x + blockIdx.x * blockDim.x = column index (0 to K-1)
-      //   - threadIdx.y + blockIdx.y * blockDim.y = row index (0 to M-1)
-      //
-      // Why {K, M} not {M, K}? Because CUDA convention:
-      //   - gridDim.x (1st param) controls blockIdx.x → x-axis → columns
-      //   - gridDim.y (2nd param) controls blockIdx.y → y-axis → rows
-      matrix_multplication_naive<<<dim3{CEIL_DIV(K, 32), CEIL_DIV(M, 32)},
+      matrix_multplication_naive<<<dim3{CEIL_DIV(M, 32), CEIL_DIV(K, 32)},
                                    dim3{32, 32}, 0, streams[0]>>>(d_a, d_b, d_c,
                                                                   M, N, K);
       cuda_error("FAIELD: MATRIX MULTPLICATION: NAIVE");
       break;
     }
     case GMEM: {
-      // GMEM kernel uses 1D thread blocks (32*32 = 1024 threads)
-      // Instead of 2D blocks like NAIVE (32×32 threads)
-      // This allows linear indexing: threadIdx.x maps to [row, col] via:
-      //   col = threadIdx.x % 32  (adjacent threads → adjacent columns)
-      //   row = threadIdx.x / 32  (for memory coalescing in row-major layout)
       matrix_multplication_gmem<32>
-          <<<dim3{CEIL_DIV(K, 32), CEIL_DIV(M, 32)}, 32 * 32, 0, streams[0]>>>(
+          <<<dim3{CEIL_DIV(M, 32), CEIL_DIV(K, 32)}, 32 * 32, 0, streams[0]>>>(
               d_a, d_b, d_c, M, N, K);
       cuda_error("FAIELD: MATRIX MULTPLICATION: GMEM");
       break;
     }
     case SMEM: {
       matrix_multplication_smem<32>
-          <<<dim3{CEIL_DIV(K, 32), CEIL_DIV(M, 32)}, 32 * 32, 0, streams[0]>>>(
+          <<<dim3{CEIL_DIV(M, 32), CEIL_DIV(K, 32)}, 32 * 32, 0, streams[0]>>>(
               d_a, d_b, d_c, M, N, K);
       cuda_error("FAIELD: MATRIX MULTPLICATION: SMEM");
       break;
@@ -127,9 +109,6 @@ void wrapper(KernelType kernel, bool verify_results) {
       const uint BN = 8;
       const uint BK = 64;
       const uint TM = 8;
-      // Template params: <BM, BN, BK, TM> (match kernel definition order!)
-      // Grid: {rows, cols} because kernel uses blockIdx.x for out_row,
-      // blockIdx.y for out_col
       matrix_multplication_1d_blocktailing<BM, BN, BK, TM>
           <<<dim3{CEIL_DIV(M, BM), CEIL_DIV(K, BK)}, (BM * BK) / TM, 0,
              streams[0]>>>(d_a, d_b, d_c, M, N, K);
@@ -170,10 +149,10 @@ void wrapper(KernelType kernel, bool verify_results) {
   }
 
   {
-    CudaTimer timer("Copying results from device to host");
+    CudaTimer timer("Copying results (d_c to h_c)");
     cudaMemcpyAsync(h_c, d_c, M * K * sizeof(int), cudaMemcpyDeviceToHost,
                     streams[0]);
-    cuda_error("cudaMemcpyAsync d_out to h_out");
+    cuda_error("cudaMemcpyAsync d_c to h_c");
     cudaStreamSynchronize(streams[0]);
   }
 

@@ -1,8 +1,7 @@
 #ifndef NAIVE_CUH_
 #define NAIVE_CUH_
 
-// Naive matrix multiplication: C = A × B
-// A[M][N] B[N][K] C[M][K]
+// Naive matrix multiplication
 __global__ void matrix_multplication_naive(int *d_a, int *d_b, int *d_c, uint m,
                                            uint n, uint k) {
   uint c_row = threadIdx.x + blockIdx.x * blockDim.x;
